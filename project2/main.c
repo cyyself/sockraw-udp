@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <linux/if_packet.h>
@@ -9,8 +10,16 @@
 
 const char* bind_interface = "ens33";
 
+int sock_fd;
+
+void sigint_handler(sig_t s){
+	close(sock_fd);
+	exit(1); 
+}
+
 int main() {
-	int sock_fd = socket(PF_PACKET,SOCK_RAW,htons(ETH_P_IP));
+	signal(SIGINT,(__sighandler_t)sigint_handler);
+	sock_fd = socket(PF_PACKET,SOCK_RAW,htons(ETH_P_IP));
 	struct sockaddr_ll sll;
 	memset(&sll,0,sizeof(sll));
 	sll.sll_family = AF_PACKET;
