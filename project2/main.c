@@ -207,7 +207,7 @@ void init_test_udp_payload() {
 	memcpy(test_udp_payload,begin,strlen(begin));
 	char *end = "----- Test END -----\n";
 	memcpy(test_udp_payload+2800,end,strlen(end));
-	test_udp_payload[3000] = 0;
+	test_udp_payload[2999] = 0;
 }
 int main() {
 	//init random seed (for random packet id)
