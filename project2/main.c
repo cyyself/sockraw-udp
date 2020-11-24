@@ -160,7 +160,9 @@ void send_ip(struct in_addr dst_ip,unsigned char protocol,unsigned char *payload
 	if (len > mtu - (l3_header.ihl << 2)) {
 		//do_fragment
 		int each_sz = lowbit_clear(mtu - (l3_header.ihl << 2),3);
-		for (int i=0;i<len;i+=each_sz) {
+		//try to send in reverse order to check frag is ok
+		for (int i=len-(len%each_sz==0?each_sz:len%each_sz);i>=0;i-=each_sz) {
+		//for (int i=0;i<len;i+=each_sz) {
 			unsigned char more_frag = i + each_sz < len;
 			l3_header.tot_len = endian_reverse(20 + (more_frag ? each_sz : len - i));
 			l3_header.frag_off = endian_reverse((i >> 3) | (more_frag?more_frag_mask:0));
