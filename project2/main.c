@@ -17,7 +17,7 @@ unsigned char mymac[6];
 unsigned char bcast_mac[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
 const unsigned short more_frag_mask= 0x2000;
 const unsigned short frag_offset_mask = 0x1fff;
-const unsigned short mtu = 1500;
+const unsigned short mtu = 1500;//you can even try 28
 const int buf_sz = 65536;
 
 int sock_fd;
@@ -264,6 +264,7 @@ int main() {
 	init_test_udp_payload();
 	send_udp("192.168.28.1",2333,2333,test_udp_payload,3000);//you can change it
 	//please see tcpdump or wireshark
+	//test udp application on remote host: socat - udp-listen:2333,fork
 	unsigned char buf[buf_sz];
 	ssize_t sz;
 	while ((sz = recv(sock_fd,buf,buf_sz,0)) > 0) {
