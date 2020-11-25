@@ -7,18 +7,25 @@
 #include <sys/ioctl.h>
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
+#include <linux/if_arp.h>
 #include <linux/ip.h>
-#include <net/if.h>
-#include <net/ethernet.h>
+#include <linux/udp.h>
 #include "cksum.c"
-const char* bind_interface = "ens33";//you can change it
+
+
+
+char* bind_interface = "docker0";//you can change it, such as eth0
+
 struct in_addr myip;
 unsigned char mymac[6];
-unsigned char bcast_mac[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
+const unsigned char bcast_mac[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
+unsigned short mtu = 1500;//you can even try 28
+
 const unsigned short more_frag_mask= 0x2000;
 const unsigned short frag_offset_mask = 0x1fff;
-const unsigned short mtu = 1500;//you can even try 28
+const unsigned char proto_udp = 17;
 const int buf_sz = 65536;
+#define max_frag_size 65536//actually supoort to 9000 Bytes jumbo frame is enough
 
 int sock_fd;
 
@@ -34,10 +41,6 @@ void print_mac_addr(unsigned char *mac) {
 unsigned short endian_reverse(unsigned short x) {
 	return (x << 8) | (x >> 8);
 }
-
-char frag_mem[1<<8][1<<16];//hash id to 8 bit
-unsigned short frag_len[1<<8];
-unsigned short frag_totlen[1<<8];
 
 char get_header_hash(struct iphdr l3_header) {
 	const char hash_base = 2333;
@@ -66,6 +69,18 @@ int verify_cksum(struct iphdr l3_header) {
 	if (in_cksum(&l3_header,sizeof(l3_header)) == cksum) return 0;
 	else return 1;
 }
+void recv_udp(unsigned char *payload,unsigned short len) {
+	struct udphdr l4_header;
+	memcpy(&l4_header,payload,sizeof(l4_header));
+	if (endian_reverse(l4_header.len) == len) {
+		printf("recv_udp src=%d dst=%d\n",endian_reverse(l4_header.source),endian_reverse(l4_header.dest));
+		for (int i=8;i<len;i++) printf("%c",payload[i]);
+		printf("\n");
+	}
+	else {
+		printf("bad udp size\n");
+	}
+}
 void recv_ipv4(unsigned char *packet,unsigned short len) {
 	struct iphdr l3_header;
 	memcpy(&l3_header,packet,sizeof(l3_header));
@@ -73,9 +88,9 @@ void recv_ipv4(unsigned char *packet,unsigned short len) {
 	memcpy(&saddr,&l3_header.saddr,sizeof(saddr));
 	memcpy(&daddr,&l3_header.daddr,sizeof(saddr));
 	char *src_ip_s = inet_ntoa(saddr);
-	printf("src ip: %s\n",src_ip_s);
+	printf("src ip=%s, ",src_ip_s);
 	char *dst_ip_s = inet_ntoa(daddr);
-	printf("dst ip: %s\n",dst_ip_s);
+	printf("dst ip=%s,",dst_ip_s);
 	if (len != endian_reverse(l3_header.tot_len)) {
 		printf("Packet size error\n");
 		return;
@@ -90,8 +105,11 @@ void recv_ipv4(unsigned char *packet,unsigned short len) {
 	unsigned short payloadlen = endian_reverse(l3_header.tot_len) - (l3_header.ihl << 2);
 	printf("payloadlen=%d,frag_offset=%d,more_frag=%s\n",payloadlen,frag_offset,more_frag?"YES":"NO");
 	if (more_frag || frag_offset) {
+		static char frag_mem[1<<8][max_frag_size];//hash id to 8 bit
+		static unsigned short frag_len[1<<8];
+		static unsigned short frag_totlen[1<<8];
 		unsigned char header_hash = get_header_hash(l3_header);
-		if (payloadlen + frag_offset >= 1 << 16) {//check if this packet will result in buffer overflow
+		if (payloadlen + frag_offset >= max_frag_size) {//check if this packet will result in buffer overflow
 			printf("bad packet\n");
 			return;
 		}
@@ -99,13 +117,21 @@ void recv_ipv4(unsigned char *packet,unsigned short len) {
 		memcpy(&frag_mem[header_hash][frag_offset],payload,payloadlen);
 		if (frag_totlen[header_hash] && frag_offset > frag_totlen[header_hash]) {
 			frag_totlen[header_hash] = 0;
+			printf("drop frag\n");
 		}
 		if (!more_frag) frag_totlen[header_hash] = frag_offset + payloadlen;
 		if (frag_len && frag_len[header_hash] == frag_totlen[header_hash]) {
 			printf("reassemble packet success\n");
-			print_hex(frag_mem[header_hash],frag_totlen[header_hash]);
+			if (l3_header.protocol == proto_udp) {
+				recv_udp(frag_mem[header_hash],frag_totlen[header_hash]);
+			}
 			frag_totlen[header_hash] = 0;
 			frag_len[header_hash] = 0;
+		}
+	}
+	else {
+		if (l3_header.protocol == proto_udp) {
+			recv_udp(payload,payloadlen);
 		}
 	}
 }
@@ -189,27 +215,32 @@ void send_ip_a(char* dst_ip,unsigned char protocol,unsigned char *payload,unsign
 }
 void send_udp(char* dst_ip,unsigned short src_port,unsigned short dst_port,char *payload,unsigned short len) {
 	char buf[buf_sz];
-	buf[0] = src_port >> 8;
-	buf[1] = src_port & 0xff;
-	buf[2] = dst_port >> 8;
-	buf[3] = dst_port & 0xff;
-	buf[4] = (len+8) >> 8;
-	buf[5] = (len+8) & 0xff;
-	buf[6] = 0;
-	buf[7] = 0;
+	struct udphdr l4_header;
+	l4_header.source = endian_reverse(src_port);
+	l4_header.dest = endian_reverse(dst_port);
+	l4_header.check = 0;
+	l4_header.len = endian_reverse(len + 8);
+	memcpy(buf,&l4_header,sizeof(l4_header));
 	memcpy(buf+8,payload,len);
-	send_ip_a(dst_ip,17,buf,len+8);
+	send_ip_a(dst_ip,proto_udp,buf,len+8);
 }
 char test_udp_payload[3000];
 void init_test_udp_payload() {
 	memset(test_udp_payload,' ',sizeof(test_udp_payload));
 	char *begin = "----- Test BEGIN -----\nHi, I'm a udp payload of size 3000.\n";
 	memcpy(test_udp_payload,begin,strlen(begin));
-	char *end = "----- Test END -----\n";
-	memcpy(test_udp_payload+2800,end,strlen(end));
-	test_udp_payload[3000] = 0;
+	char *end = "\n----- Test END -----\n";
+	memcpy(test_udp_payload+3000-strlen(end),end,strlen(end));
 }
-int main() {
+int main(int argc,char *argv[]) {
+	//use -l to bind for specific interface
+	for (int i=0;i<argc;i++) {
+		if (strcmp(argv[i],"-l") == 0) {
+			if (i + 1 < argc) {
+				bind_interface = argv[i+1];
+			}
+		}
+	}
 	//init random seed (for random packet id)
 	srand(time(NULL));
 	//init sighandler to avoid unuseable fd after close
@@ -262,7 +293,7 @@ int main() {
 	}
 	//send test
 	init_test_udp_payload();
-	send_udp("192.168.28.1",2333,2333,test_udp_payload,3000);//you can change it
+	send_udp("172.17.0.1",2333,2333,test_udp_payload,3000);//you can change it
 	//please see tcpdump or wireshark
 	//test udp application on remote host: socat - udp-listen:2333,fork
 	unsigned char buf[buf_sz];
