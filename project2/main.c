@@ -293,7 +293,7 @@ int main(int argc,char *argv[]) {
 	}
 	//send test
 	init_test_udp_payload();
-	send_udp("172.17.0.1",2333,2333,test_udp_payload,3000);//you can change it
+	send_udp("172.17.0.2",2333,2333,test_udp_payload,3000);//you can change it
 	//please see tcpdump or wireshark
 	//test udp application on remote host: socat - udp-listen:2333,fork
 	unsigned char buf[buf_sz];
