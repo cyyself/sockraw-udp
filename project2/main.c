@@ -38,10 +38,6 @@ void print_mac_addr(unsigned char *mac) {
 	for (int i=0;i<6;i++) printf("%02x%c",(unsigned char)mac[i],i==5?'\n':' ');
 }
 
-unsigned short endian_reverse(unsigned short x) {
-	return (x << 8) | (x >> 8);
-}
-
 char get_header_hash(struct iphdr l3_header) {
 	const char hash_base = 2333;
 	char src_ip_hash = 
@@ -72,8 +68,8 @@ int verify_cksum(struct iphdr l3_header) {
 void recv_udp(unsigned char *payload,unsigned short len) {
 	struct udphdr l4_header;
 	memcpy(&l4_header,payload,sizeof(l4_header));
-	if (endian_reverse(l4_header.len) == len) {
-		printf("recv_udp src=%d dst=%d\n",endian_reverse(l4_header.source),endian_reverse(l4_header.dest));
+	if (ntohs(l4_header.len) == len) {
+		printf("recv_udp src=%d dst=%d\n",ntohs(l4_header.source),ntohs(l4_header.dest));
 		for (int i=8;i<len;i++) printf("%c",payload[i]);
 		printf("\n");
 	}
@@ -91,7 +87,7 @@ void recv_ipv4(unsigned char *packet,unsigned short len) {
 	printf("src ip=%s, ",src_ip_s);
 	char *dst_ip_s = inet_ntoa(daddr);
 	printf("dst ip=%s,",dst_ip_s);
-	if (len != endian_reverse(l3_header.tot_len)) {
+	if (len != ntohs(l3_header.tot_len)) {
 		printf("Packet size error\n");
 		return;
 	} 
@@ -99,10 +95,10 @@ void recv_ipv4(unsigned char *packet,unsigned short len) {
 		printf("header cksum error\n");
 		return;
 	}
-	unsigned short more_frag = endian_reverse(l3_header.frag_off) & more_frag_mask;
-	unsigned short frag_offset = (endian_reverse(l3_header.frag_off) & frag_offset_mask) << 3;
+	unsigned short more_frag = ntohs(l3_header.frag_off) & more_frag_mask;
+	unsigned short frag_offset = (ntohs(l3_header.frag_off) & frag_offset_mask) << 3;
 	unsigned char *payload = packet + (l3_header.ihl << 2);
-	unsigned short payloadlen = endian_reverse(l3_header.tot_len) - (l3_header.ihl << 2);
+	unsigned short payloadlen = ntohs(l3_header.tot_len) - (l3_header.ihl << 2);
 	printf("payloadlen=%d,frag_offset=%d,more_frag=%s\n",payloadlen,frag_offset,more_frag?"YES":"NO");
 	if (more_frag || frag_offset) {
 		static char frag_mem[1<<8][max_frag_size];//hash id to 8 bit
@@ -146,13 +142,13 @@ void recv_eth(unsigned char *frame,unsigned short len) {
 	printf("mac src: ");
 	print_mac_addr(l2_header.h_source);
 	*/
-	switch (endian_reverse(l2_header.h_proto)) {
+	switch (ntohs(l2_header.h_proto)) {
 		case ETH_P_IP:
 			printf("IPv4\n");
 			recv_ipv4(frame+sizeof(l2_header),len-sizeof(l2_header));
 			break;
 		default:
-			//printf("unknow protocol %04x\n",endian_reverse(l2_header.h_proto));
+			//printf("unknow protocol %04x\n",ntohs(l2_header.h_proto));
 			break;
 	}
 }
@@ -175,7 +171,7 @@ void send_ip(struct in_addr dst_ip,unsigned char protocol,unsigned char *payload
 	l3_header.version = 4;
 	l3_header.ihl = 5;
 	l3_header.tos = 0;
-	l3_header.tot_len = endian_reverse(len + (l3_header.ihl << 2));
+	l3_header.tot_len = htons(len + (l3_header.ihl << 2));
 	l3_header.id = rand() & 0xffff;
 	l3_header.frag_off = 0;
 	l3_header.ttl = 64;
@@ -190,13 +186,13 @@ void send_ip(struct in_addr dst_ip,unsigned char protocol,unsigned char *payload
 		for (int i=len-(len%each_sz==0?each_sz:len%each_sz);i>=0;i-=each_sz) {
 		//for (int i=0;i<len;i+=each_sz) {
 			unsigned char more_frag = i + each_sz < len;
-			l3_header.tot_len = endian_reverse(20 + (more_frag ? each_sz : len - i));
-			l3_header.frag_off = endian_reverse((i >> 3) | (more_frag?more_frag_mask:0));
+			l3_header.tot_len = htons(20 + (more_frag ? each_sz : len - i));
+			l3_header.frag_off = htons((i >> 3) | (more_frag?more_frag_mask:0));
 			l3_header.check = 0;
 			l3_header.check = in_cksum(&l3_header,sizeof(l3_header));
 			memcpy(buf,&l3_header,sizeof(l3_header));
 			memcpy(buf+20,payload+i,(more_frag ? each_sz : len - i));
-			send_eth(bcast_mac,endian_reverse(ETH_P_IP),buf,endian_reverse(l3_header.tot_len));
+			send_eth(bcast_mac,htons(ETH_P_IP),buf,ntohs(l3_header.tot_len));
 			//no arp, broadcast every packet
 		}
 	}
@@ -204,7 +200,7 @@ void send_ip(struct in_addr dst_ip,unsigned char protocol,unsigned char *payload
 		l3_header.check = in_cksum(&l3_header,sizeof(l3_header));
 		memcpy(buf,&l3_header,sizeof(l3_header));
 		memcpy(buf+20,payload,len);
-		send_eth(bcast_mac,endian_reverse(ETH_P_IP),buf,len+20);
+		send_eth(bcast_mac,htons(ETH_P_IP),buf,len+20);
 		//no arp, broadcast every packet
 	}
 }
@@ -216,10 +212,10 @@ void send_ip_a(char* dst_ip,unsigned char protocol,unsigned char *payload,unsign
 void send_udp(char* dst_ip,unsigned short src_port,unsigned short dst_port,char *payload,unsigned short len) {
 	char buf[buf_sz];
 	struct udphdr l4_header;
-	l4_header.source = endian_reverse(src_port);
-	l4_header.dest = endian_reverse(dst_port);
+	l4_header.source = htons(src_port);
+	l4_header.dest = htons(dst_port);
 	l4_header.check = 0;
-	l4_header.len = endian_reverse(len + 8);
+	l4_header.len = htons(len + 8);
 	memcpy(buf,&l4_header,sizeof(l4_header));
 	memcpy(buf+8,payload,len);
 	send_ip_a(dst_ip,proto_udp,buf,len+8);
